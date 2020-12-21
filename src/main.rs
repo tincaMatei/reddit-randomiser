@@ -1,58 +1,16 @@
 use std::fs;
-use std::fs::{File};
-use std::io::Write;
 use tide::Response;
 
-fn get_image_html(link: String) -> String {
-    format!("<img src={} class=\"center-fit\">", link).to_string()
-}
-
-fn get_gfycat_embed(link: tide::http::Url) -> String {
-    let mut constructed_link = String::from("http://gfycat.com/ifr") + link.path();
-    
-    format!("<iframe src=\'{}\' frameborder=\'0\' scrolling=\'no\' width=\'100%\'
-        height=\'100%\' style=\'position:absolute;top:0;left:0\' allowfullscreen></iframe>", 
-        constructed_link).to_string()
-}
-
-fn get_iframe(link: String) -> String {
-    format!("<iframe class=\"center-fit\" src=\"{}\"></iframe>\n", link).to_string()
-}
-
-fn get_vreddit(mut permalink: String) -> String {
-    permalink.push_str(".json");
-    let body = reqwest::blocking::get(&permalink).unwrap().text().unwrap();
-    println!("new permalink: {}", permalink);
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let mut video_url = v[0]["data"]["children"][0]["data"]["media"]["reddit_video"]["fallback_url"].clone();
-    if video_url == serde_json::Value::Null {
-        video_url = v[0]["data"]["children"][0]["data"]["crosspost_parent_list"][0]["media"]["reddit_video"]["fallback_url"].clone();
-    }
-    println!("Video url: {}", video_url);
-
-    format!("<video class=\"center-fit\"controls><source src={}></video>", video_url).to_string()
-}
-
-fn get_html_segment(link: String, permalink: String) -> String {
-    let mut contents = String::new();
+/// Returns the reddit embed
+fn get_reddit_embed(permalink: &String, title: &String, created: i64) -> String {
     let permalink = String::from("https://www.reddit.com") + &permalink;
 
     let mut contents = format!("<a href=\"{}\" target=\"_blank\">Reddit link</a>\n
 <div class=\"imgbox\">\n", permalink);
     
-    let mut parsed_url = tide::http::Url::parse(&link).unwrap();
-    
-    println!("{}", link);
-   
-    let embed = if parsed_url.domain().unwrap() == "gfycat.com" {
-        get_gfycat_embed(parsed_url)
-    } else if link.ends_with(".gifv") {
-        get_iframe(link)
-    } else if parsed_url.domain().unwrap() == "v.redd.it"{
-        get_vreddit(permalink)
-    } else {
-        get_image_html(link)
-    };
+    let mut embed = String::new();
+    embed.push_str(format!("<blockquote class = \"reddit-card\" data-card-created=\"{}\"><a href=\"{}/?ref=share&ref_source=embed\">{}</a></blockquote>", created, permalink, title).as_str());
+    embed.push_str(format!("<script async src = \"//embed.redditmedia.com/widgets/platform.js\" charset=\"UTF-8\"></script>").as_str());
 
     contents.push_str(&embed);
 
@@ -61,65 +19,79 @@ fn get_html_segment(link: String, permalink: String) -> String {
     contents
 }
 
-fn build_html(piece: String) -> String {
-    let mut contents = String::new();
+/// Replaces the template variables with the given data
+fn fill_template(template: String, title: &str, contents: &str) -> String {
+    let template = template.replace("%TITLE", title);
+    let template = template.replace("%CONTENT", contents);
 
-    contents.push_str("
-<!DOCTYPE html>
-<html>
-
-<head>
-    <style>
-    * {
-        margin: 0;
-        padding: 0;
-    }
-
-    .imgbox {
-        display: grid;
-        height:100%;
-    }
-
-    .center-fit {
-        max-width: 100%;
-        max-height: 100vh;
-        margin: auto;
-    }
-    </style>
-</head>
-
-<body>
-    ");
-
-    contents.push_str(&piece);
-
-    contents.push_str("
-</body>
-
-</html>
-    ");
-
-    contents
+    template
 }
 
+/// Builds the entire html page with the reddit post page
 fn get_random_post(subreddit: String) -> String {
+    // Prepare template
+    let template = fs::read_to_string("reddit-page.html");
+    
+    let template = match template {
+        Ok(x) => { x }
+        Err(x) => { return format!("Failed to load html file: {}", x).to_string(); }
+    };
+
+    // Make the request
     let mut url_req: String = String::from("https://www.reddit.com");
     url_req.push_str(&subreddit);
     url_req.push_str("random.json");
-    
-    let body = reqwest::blocking::get(&url_req).unwrap().text().unwrap();
-    
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let image_url = v[0]["data"]["children"][0]["data"]["url"].clone();
-    let permalink = v[0]["data"]["children"][0]["data"]["permalink"].clone();
+   
+    let body = reqwest::blocking::get(&url_req);
+    let body = match body {
+        Ok(x) => { x }
+        Err(x) => { return fill_template(template, "Whoopsie!", format!("Failed to fetch post: {}", x).as_str()); }
+    }.text();
+   
+    let body = match body {
+        Ok(x) => { x }
+        Err(x) => { return fill_template(template, "Whoopsie!", format!("Failed to fetch post: {}", x).as_str()); }
+    };
 
-    if let serde_json::Value::String(image_url) = image_url {
-        let permalink = if let serde_json::Value::String(y) = permalink { y } else { String::new() };
-        build_html(get_html_segment(image_url, permalink))
+    let json = serde_json::from_str(&body);
+
+    let json: serde_json::Value = match json {
+        Ok(x) => { x }
+        Err(x) => { return fill_template(template, "Whoopsie!", format!("Failed to fetch post: {}", x).as_str()); }
+    };
+
+    let json = match json[0] {
+        serde_json::Value::Object(_) => { json[0].clone() }
+        serde_json::Value::Null => { json }
+        _ => { return fill_template(template, "Whoopsie!", "Failed to fetch post: JSON [0] is not a dictionary"); }
+    };
+
+    let permalink = json["data"]["children"][0]["data"]["permalink"].clone();
+    let created = json["data"]["children"][0]["data"]["created"].clone();
+    let title = json["data"]["children"][0]["data"]["title"].clone();
+    
+    let permalink = if let serde_json::Value::String(y) = permalink { y } 
+        else { return fill_template(template, "Whoopsie!", "Failed to fetch post: JSON permalink is not a string"); };
+    let title = if let serde_json::Value::String(y) = title { y } 
+        else { return fill_template(template, "Whoopsie!", "Failed to fetch post: JSON title is not a string"); };
+    
+    let created = if let serde_json::Value::Number(y) = created {
+        let y = y.as_i64();
+        match y {
+            Some(x) => { x }
+            None => {
+                println!("Failed to load 'created'");
+                0
+            }
+        }
     } else {
-        let html_contents = fs::read_to_string("bad.html").unwrap();
-        html_contents
-    }
+        println!("JSON created is not a number");
+        0
+    };
+
+    let embed = get_reddit_embed(&permalink, &title, created);
+    fill_template(template, &title, &embed)
+    //"stub".to_string()
 }
 
 async fn request_subreddit_post(req: tide::Request<()>) -> tide::Result<tide::Response> {
@@ -131,10 +103,32 @@ async fn request_subreddit_post(req: tide::Request<()>) -> tide::Result<tide::Re
 }
 
 async fn request_image(req: tide::Request<()>) -> tide::Result<tide::Response> {
-    let contents = fs::read("image.img").unwrap();
+    let img = req.url().path_segments();
+    
+    let img = match img {
+        Some(x) => {
+            x.last().unwrap()
+        }
+        None => {
+            return Ok(Response::builder(404)
+                .build());
+        }
+    };
+
+    println!("{}", img);
+
+    let contents = fs::read(img);
+
+    let contents = match contents{
+        Ok(x) => { x }
+        Err(x) => { 
+            println!("Failed to load image: {}", x);
+            return Ok(Response::builder(404).build());
+        }
+    };
+
     Ok(Response::builder(200)
         .body(contents)
-        .header("asdf", "fdsa")
         .content_type(tide::http::mime::BYTE_STREAM)
         .build())
 }
@@ -144,17 +138,21 @@ async fn main() -> Result<(), std::io::Error>{
     tide::log::start();
    
     let mut app = tide::new();
-    app.at("*").get(|_| async { Ok("Do something lmao") } );
+    app.at("*").get(|_| async { Ok("You should do (ip):(port)/r/subreddit/ (see the last '/')") } );
+    
     app.at("/r/*/").get(request_subreddit_post);
+
     app.at("/debug").get(|_| async move {
         Ok(Response::builder(200)
             .body("<html>hi</html>")
             .header("asdf", "fdsa")
             .content_type(tide::http::mime::HTML)
             .build()) } );
-    app.at("*.img").get(request_image);
 
-    app.listen("0.0.0.0:8080").await;
+    app.at("*.png").get(request_image);
+    app.at("*.ico").get(request_image);
+
+    app.listen("0.0.0.0:6969").await;
     
     Ok(())
 }
