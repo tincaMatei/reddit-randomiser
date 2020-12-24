@@ -9,7 +9,7 @@ fn get_reddit_embed(permalink: &String, title: &String, created: i64) -> String 
 <div class=\"imgbox\">\n", permalink);
     
     let mut embed = String::new();
-    embed.push_str(format!("<blockquote class = \"reddit-card\" data-card-created=\"{}\"><a href=\"{}/?ref=share&ref_source=embed\">{}</a></blockquote>", created, permalink, title).as_str());
+    embed.push_str(format!("<blockquote class = \"reddit-card\" data-card-created=\"{}\"><a href=\"{}?ref=share&ref_source=embed\">{}</a></blockquote>", created, permalink, title).as_str());
     embed.push_str(format!("<script async src = \"//embed.redditmedia.com/widgets/platform.js\" charset=\"UTF-8\"></script>").as_str());
 
     contents.push_str(&embed);
